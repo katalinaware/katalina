@@ -1,0 +1,70 @@
+# Created by https://www.toptal.com/developers/gitignore/api/go
+# Edit at https://www.toptal.com/developers/gitignore?templates=go
+
+### Go ###
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+#
+# Binaries for programs and plugins
+*.dll
+*.so
+*.dylib
+
+# Exclude exe file for 7z from being ignored.
+!binaries/*/7z.exe
+
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+### Go Patch ###
+*/vendor/
+*/Godeps/
+
+# Ignore results and log directory
+*.json
+*logs.txt
+*.log
+
+# Exclude VSCODE config
+**/.vscode/*
+
+**.DS_Store
+
+# Ignore the results directory
+malware_data/*
+
+# Ignore iterator.sh script and launch.json
+*/erator.sh
+*/launch.json
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+
+# Ignore the config for Trunk Vscode extension
+.trunk/*
+
+# Ignore the Temp Directory and Input_directory
+Temp/
+input_dir/
+datasets/
+venv/
+venv*/
+venv_*
+katalinaware

@@ -1,0 +1,83 @@
+name: Build&Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+      packages: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.head_commit.id }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+
+      - name: Run Tests
+        run: go test -v ./...
+
+      - name: Bump version and push tag
+        id: tag_version
+        uses: anothrNick/github-tag-action@1.64.0 
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WITH_V: true
+          DEFAULT_BUMP: patch
+
+      - name: Build All Binaries
+        run: |
+          # Build darwin-amd64
+          env GOOS=darwin GOARCH=amd64 go build -v -o katalina-darwin-amd64
+          
+          # Build darwin-arm64
+          env GOOS=darwin GOARCH=arm64 go build -v -o katalina-darwin-arm64
+          
+          # Build linux-amd64
+          env GOOS=linux GOARCH=amd64 go build -v -o katalina-linux-amd64
+          
+          # Build linux-arm64
+          env GOOS=linux GOARCH=arm64 go build -v -o katalina-linux-arm64
+          
+          # Build windows-amd64
+          env GOOS=windows GOARCH=amd64 go build -v -o katalina-windows-amd64.exe
+          
+          # List built binaries
+          ls -lh katalina-*
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag: ${{ steps.tag_version.outputs.new_tag }}
+          name: Release ${{ steps.tag_version.outputs.new_tag }}
+          draft: false
+          prerelease: false
+          makeLatest: true
+          body: |
+            ## Katalina Release ${{ steps.tag_version.outputs.new_tag }}
+            
+            This release includes Katalina binaries for multiple platforms.
+            
+            ### Features
+            - Comprehensive Mach-O binary analysis
+            - Code signature verification
+            - String and entropy analysis
+            - Disassembly capabilities
+          artifacts: |
+            katalina-darwin-amd64
+            katalina-darwin-arm64
+            katalina-linux-amd64
+            katalina-linux-arm64
+            katalina-windows-amd64.exe

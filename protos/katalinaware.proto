@@ -1,0 +1,681 @@
+// This proto is the schema for the output of Katalinaware.
+
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+// package katalinaware;
+option go_package = "github.com/appsworld/katalinaware/protos";
+
+message AnalysisOutput {
+  // The location of the binary being processed.
+  string file_path = 1;
+  // Hashes of the actual binary that was processed/analyzed
+  Hash processed_file_hashes = 2;
+  // Complete lineage showing the path from original file to processed binary
+  repeated FileLineageStep file_lineage = 3;
+  // The Mach-O header.
+  MachoHeader macho_header = 4;
+  // Is this a universal (Fat) binary?
+  bool is_fat = 5;
+  // Given a Fat binary, what is the selected CPU Arch for further processing?
+  string selected_fat_arch = 6;
+  NonModelFeat non_model_feat = 7;
+  ModelFeat model_feat = 8;
+}
+
+message Hash {
+  string md5 = 1;
+  string sha1 = 2;
+  string sha256 = 3;
+}
+
+message FileLineageStep {
+  // The step number in the processing pipeline (0-indexed)
+  int32 step = 1;
+  // Human-readable description of this step
+  string description = 2;
+  // File path at this step in the pipeline
+  string file_path = 3;
+  // Hashes of the file at this step
+  Hash hashes = 4;
+}
+
+// MachoHeader represents the Mach-O header.
+// The `Reserved`header field has been omitted on purpose.
+message MachoHeader {
+  // The file magic.
+  string magic = 1;
+  // The CPU architecture targeted by this binary.
+  string cpu_type = 2;
+  // The CPU sub type supported by the Mach-O binary.
+  string cpu_sub_type = 3;
+  // The type of the Mach-O file: executable, object, shared library, etc.
+  string header_file_type = 4;
+  // The Number of load commands.
+  int32 num_cmds = 5;
+  // The total size of all of the load commands.
+  int32 cmd_size = 6;
+  // A set of Mach-O header flags. Example, PIE, DyldLink, TwoLevel, etc.
+  repeated string flags = 7;
+  // The number of Mach-O header flags.
+  int32 num_flags = 8;
+}
+
+message NonModelFeat {
+  // The raw certificate features.
+  repeated Certificate certificates = 1;
+  // Unique identifiers for identifying a binary.
+  string uuid = 2;
+  // The unique string features present in a binary.
+  RawStringFeat raw_string_feat = 3;
+  // The external and all symbols present in the binary. It also contains the
+  // hash of the symbols.
+  Symbol symbol_info = 4;
+}
+
+// Certificate holds a generic set of fields we want from all certs.
+// Good info on cert validations for revoked certs can be found here:
+// https://developer.apple.com/forums/thread/712395.
+message Certificate {
+  repeated string sans = 1;
+  repeated string emails = 2;
+  repeated string ip_addresses = 3;
+  string serial_number = 4;
+  CertIssuerSubj issuer = 5;
+  string valid_from = 6;
+  string valid_to = 7;
+  bool is_ca_signed = 8;
+  google.protobuf.Timestamp revoked_at = 9;
+  // This is meant to allow us to determine if a certificate in the chain
+  // is a CA cert or if it is the leaf node. The assumption is that
+  // leaf nodes won't be CA cert and shouldn't be.
+  bool is_ca = 10;
+
+  // Certificate role in the chain (exactly one should be true)
+  bool is_leaf = 11;
+  bool is_intermediate = 12;
+  bool is_root = 13;
+
+  // Position in the certificate chain (0=leaf, 1=first signer, etc.)
+  int32 chain_position = 14;
+
+  // Is this individual certificate cryptographically valid?
+  bool is_valid_cert = 15;
+}
+
+// CertIssuerSubj holds the issuer and subject details of a certificate.
+message CertIssuerSubj {
+  // Issuer details.
+  string issuer_name = 1;
+  string issuer_country = 2;
+  string issuer_org = 3;
+  // Subject details.
+  string subject_name = 4;
+  string subject_org = 5;
+  string subject_org_unit = 6;
+}
+
+// RawStringFeat holds the raw string features present in a binary.
+// StringRaw message definition
+message RawStringFeat {
+  repeated string paths_best_effort = 1;
+  repeated string unique_plist_paths = 2;
+  repeated string paths_with_f_string = 3;
+  repeated string url_with_f_string = 4;
+  repeated string unique_domains = 5;
+  repeated string url_best_effort = 6;
+  repeated string unique_shells = 7;
+  repeated string unique_io_device_listeners = 8;
+  repeated string unique_potential_hw_recon = 9;
+  // UniqueSymbolsWithAt is a list of symbols that start with @ as seen in the
+  // binary's strings.
+  repeated string unique_symbols_with_at = 10;
+
+  repeated ChromeExtensionValidation chrome_extensions = 11;
+
+  // All the printable strings concatenated into a single text block.
+  // It is only populated if the --all_strings flag is passed to the binary.
+  string all_strings = 12;
+
+  // Information Stealer Detection - Matched Strings
+  // Keychain access patterns that were matched
+  repeated string matched_keychain_access = 15;
+
+  // Discord webhook endpoints that were matched
+  repeated string matched_discord_webhooks = 18;
+
+  // macOS Security Bypass Detection - Matched Strings
+  // Gatekeeper bypass commands that were matched
+  repeated string matched_gatekeeper_bypass = 19;
+
+  // Quarantine removal commands that were matched
+  repeated string matched_quarantine_removal = 20;
+}
+
+message Symbol {
+  // External symbols imported by the binary.
+  repeated string ext_syms = 1;
+  // Hash of the external symbols imported by the binary.
+  string ext_sym_hash = 2;
+  // All Symbols refernced by the binary. This is excluded by default unless
+  // explicitly requested via a flag to this application.
+  repeated string all_syms = 3;
+  // Hash of all symbols referenced by the binary.
+  string all_sym_hash = 4;
+}
+
+// ModelFeat holds the features extracted from the binary that are used for ML
+// model training.
+message ModelFeat {
+  CodeDirectory code_directory = 1;
+  ObjCFeatures objective_c_features = 2;
+  SwiftFeatures swift_features = 3;
+  Segment segment_features = 4;
+  Section section_features = 5;
+  DylibFeatures dylib_features = 6;
+  DySymTabFeatures dy_sym_tab_features = 7;
+  DyldInfo dyld_info = 8;
+  Entitlements entitlements = 9;
+  CertFeaturesML cert_features = 10;
+  Matrix2D byte_entropy_dist = 11;
+  StringModel strings = 12;
+  // The disassembled instructions found in the text segment.
+  DisasFeatures assembly_features = 13;
+}
+
+// Use this message to represent a nested list [][]int32.
+message Matrix2D { repeated Row rows = 1; }
+
+message Row { repeated int32 values = 1; }
+
+// CodeDirectory holds an entry of the CodeDirectory struct found in the code
+// signature.
+message CodeDirectory {
+  // ID is the package identifier with the format com.package.name.
+  string id = 1;
+  // A unique string used to identify the signer.
+  string team_id = 2;
+  // These are the special slots present in the code directory.
+  SpecialSlot special_slots = 3;
+  // Hash type used by the binary (1=SHA1, 2=SHA256)
+  int32 hash_type = 4;
+  // CDHash extracted based on binary's hash type
+  string extracted_cdhash = 5;
+  // Full CDHash extracted based on binary's hash type
+  string extracted_cdhash_full = 6;
+  // Computed SHA1 CDHash (always computed regardless of binary's hash type)
+  string computed_sha1_cdhash = 7;
+  // Computed SHA1 full CDHash
+  string computed_sha1_cdhash_full = 8;
+  // Computed SHA256 CDHash (always computed regardless of binary's hash type)
+  string computed_sha256_cdhash = 9;
+  // Computed SHA256 full CDHash
+  string computed_sha256_cdhash_full = 10;
+  // Notarization information
+  NotarizationInfo notarization = 11;
+}
+
+// NotarizationInfo contains information about Apple notarization status
+message NotarizationInfo {
+  // Whether the binary is notarized by Apple
+  bool is_notarized = 1;
+  // Timestamp from Apple's response (milliseconds since epoch)
+  int64 timestamp = 2;
+  // Parsed timestamp as UTC string
+  string timestamp_utc = 3;
+  // Error message if notarization check failed
+  string error = 4;
+  // Record name used for the lookup (2/2/cdhash)
+  string record_name = 5;
+  // Raw signed ticket data (base64 encoded)
+  string signed_ticket = 6;
+  // Whether the record is marked as deleted
+  bool deleted = 7;
+  // Certificates extracted from the signed ticket
+  repeated Certificate certificates = 8;
+  // CDHash extracted from the signed ticket
+  string extracted_cdhash = 9;
+}
+
+// DySymTabFeatures holds features that pertain to the Dynamic Symbol command in
+// a macho binary.
+message DySymTabFeatures {
+  int32 num_external_defines = 1;
+  int32 num_external_reference = 2;
+  int32 num_external_reloc = 3;
+}
+
+// SpecialSlot represents special slots in the code directory.
+message SpecialSlot {
+  string ps_list_hash = 1;
+  string requirements_hash = 2;
+  string entitlement_hash = 3;
+  string code_resource_hash = 4;
+}
+
+// ObjCFeatures holds the features to be extracted from Objective C related
+// binaries.
+message ObjCFeatures {
+  repeated string method_names = 1;
+  string method_hash = 2;
+  repeated string class_names = 3;
+  string class_hash = 4;
+}
+
+// SwiftFeatures holds the features to be extracted from Swift related
+// binaries.
+message SwiftFeatures {
+  repeated string type_names = 1;
+  string type_hash = 2;
+}
+
+/*
+Segment holds the features related to the LC_SEGMENT command.
+
+The segment load command indicates that a part of this file is
+to be mapped into the task's address space. The protection fields
+indicate segment's maximum virtual memory protection and
+initial virtual memory protection. The protection argument describes a
+combination of read, write, and execute accesses that should be permitted.
+Specifically :
+VM_PROT_EXECUTE,VM_PROT_READ,VM_PROT_WRITE and VM_COW.
+
+Protection is the current protection of the region,
+max_protection is the maximum allowable protection for this region.
+Refs:
+https://www.gnu.org/software/hurd/gnumach-doc/Memory-Attributes.html
+http://phrack.org/issues/64/11.html
+*/
+message Segment {
+  // The total number of segments in the binary.
+  int32 num_segments = 1;
+  // Is the PageZero segment empty as expected?
+  bool has_empty_page_zero_seg = 2;
+  // The sum of all the memory sizes of each segment.
+  int32 sum_seg_mem_size = 3;
+  // The sum of all the on-disk file sizes of each segment.
+  int32 sum_seg_file_size = 4;
+  // A concat of the maxproct and initprot VM protect permission flags for the
+  // __TEXT segment.
+  string txt_seg_vm_prot = 5;
+  // A concat of the maxproct and initprot VM protect permission flags for the
+  // __DATA segment.
+  string data_seg_vm_prot = 6;
+  // A concat of the maxproct and initprot VM protect permission flags for the
+  // __LINKEDIT segment.
+  string lnk_edit_seg_vm_prot = 7;
+  // A distinct set of optional features requested by the segments.
+  repeated string unique_seg_flags = 8;
+}
+
+// Section holds the features that are unique to the section command.
+// More info on Section can be found here:
+// https://opensource.apple.com/source/dyld/dyld-95.3/src/ImageLoaderMachO.cpp.auto.html.
+message Section {
+  // Number of sections in the binary.
+  int32 num_sections = 1;
+
+  // Number of flags present in all the sections.
+  int32 num_sec_flags = 2;
+
+  // Unique number of flags present in all the sections.
+  int32 unique_num_sec_flags = 3;
+
+  // Number of sections that have a zero size.
+  int32 num_sec_zero_size = 4;
+
+  // Number of sections whose size is > 0.
+  int32 num_sec_non_zero_size = 5;
+
+  // Number of text sections in the binary.
+  int32 num_text_sec = 6;
+
+  // Number of data sections in the binary.
+  int32 num_data_sections = 7;
+
+  // Number of section attributes.
+  int32 num_attributes = 8;
+
+  // Number of relocation entries in all the sections.
+  int32 num_of_reloc = 9;
+
+  // Unique number of relocation entries in all the sections.
+  int32 unique_num_reloc_types = 10;
+
+  // Total size of all the sections.
+  int32 sum_sec_size = 11;
+
+  // Does any section have a debug attribute?
+  bool has_debug_attribute = 12;
+
+  // Does one of the sections have the self modifying code attribute?
+  bool has_self_modifying_code = 13;
+
+  // Does one of the sections have the literal C string attribute?
+  bool has_c_string_literals = 14;
+
+  // Does one of the sections have the `STRIP_STATIC_SYMS` attribute?
+  bool has_strip_symbols = 15;
+
+  // Mean entropy of all the __text sections.
+  double mean_text_sec_entropy = 16;
+
+  // Mean entropy of all the section names.
+  double mean_sec_name_entropy = 17;
+
+  // Mode entropy of all the section names.
+  double mode_sec_name_entropy = 18;
+
+  // The 1st moment of the entropies of all the section names.
+  // There is no kurtosis correction.
+  double moment_sec_name_entropy = 19;
+
+  // Individual entropy values for each section name
+  map<string, double> section_entropies = 20;
+}
+
+// DylibFeatures holds features that pertain to the Dynamic Library requested by
+// the macho binary.
+message DylibFeatures {
+  // More info about each Dylib like the name, version (current and
+  // compatible), and the time.
+  repeated Dylib dylibs = 1;
+
+  // The number of dynamic libraries.
+  int32 num_dylibs = 2;
+
+  // Does the binary contain a library that allows it to
+  // have access to audio/video capabilities.
+  // https://developer.apple.com/documentation/avfoundation
+  bool has_audiovisual_cap = 3;
+
+  // Has the ability to perform security operations.
+  // E.g., identity modification, access to credentials.
+  bool has_security_cap = 4;
+
+  // Has the ability to retrieve user's current geolocation.
+  bool has_location_cap = 5;
+
+  // Indicates the app has the ability to retrieve things such
+  // as iCloud data, calendar events, email, and contacts.
+  bool has_personal_dat = 6;
+
+  // Has frameworks with the ability to read or mount volumes.
+  bool has_disk_cap = 7;
+}
+
+// Dylib represents information about a dynamic library.
+message Dylib {
+  // Name of the dynamic library.
+  string name = 1;
+
+  // Version information for the dynamic library.
+  string current_version = 2;
+
+  // Compatibility version information for the dynamic library.
+  string compatible_version = 3;
+
+  // Time information for the dynamic library.
+  int32 time = 4;
+}
+
+// DyldInfo holds the features extracted from a LC_DYLD_INFO or
+// LC_DYLD_INFO_ONLY load commands.
+message DyldInfo {
+  // The size of the rebase info.
+  int32 rebase_size = 1;
+
+  // The size of the binding info. The bind information is a stream of byte
+  // sized opcodes whose symbolic names start with BIND_OPCODE_.
+  int32 bind_size = 2;
+
+  // The size of the lazy binding info.
+  // Some uses of external symbols do not need to be bound immediately.
+  // Instead they can be lazily bound on first use.  The lazy_bind
+  // are a stream of BIND opcodes to bind all lazy symbols.
+  int32 lazy_bind_size = 3;
+
+  // The size of the export info.
+  int32 export_size = 4;
+}
+
+// Entitlements holds the information about the binary's entitlements such as
+// it's hash.
+message Entitlements {
+  repeated string entitlements = 1;
+  string ent_hash = 2;
+  string plist_hash = 3;
+  bool has_task_allow = 4;
+  bool has_allow_unsigned_mem = 5;
+  bool has_jit_allow = 6;
+}
+
+// CertFeaturesML holds features related to a certificate in a machine learning
+// context.
+message CertFeaturesML {
+  // Is the certificate signed?
+  bool is_signed = 1;
+
+  // Is the certificate self-signed?
+  bool is_self_signed = 2;
+
+  // Is the certificate signed by a certificate authority (CA)?
+  bool is_signed_by_ca = 3;
+
+  // Has the certificate been revoked by its signer?
+  bool is_certificate_revoked = 4;
+
+  // Are all certificates in the chain cryptographically valid?
+  bool is_valid_cert = 5;
+
+  // Is the binary signed with ad-hoc signing (local/development signing)?
+  bool is_ad_hoc = 6;
+}
+
+message DisasFeatures {
+  map<string, double> op_code_frequency = 1;
+  ControlFlowGraph control_flow_graph = 2;
+}
+
+message ControlFlowGraph {
+  repeated BasicBlock basic_blocks = 1;
+  repeated ControlFlowEdge edges = 2;
+  repeated Function functions = 3;
+}
+
+message BasicBlock {
+  string id = 1;
+  string start_address = 2;
+  string end_address = 3;
+  repeated Instruction instructions = 4;
+  repeated string successors = 5;
+  repeated string predecessors = 6;
+  string function_id = 7;
+}
+
+message Function {
+  string id = 1;
+  string name = 2;
+  string start_address = 3;
+  string end_address = 4;
+  repeated string basic_block_ids = 5;
+  int32 instruction_count = 6;
+}
+
+message ControlFlowEdge {
+  string from = 1;
+  string to = 2;
+  EdgeType type = 3;
+}
+
+enum EdgeType {
+  EDGE_TYPE_UNSPECIFIED = 0;
+  EDGE_TYPE_FALL_THROUGH = 1;
+  EDGE_TYPE_CONDITIONAL_JUMP = 2;
+  EDGE_TYPE_UNCONDITIONAL_JUMP = 3;
+  EDGE_TYPE_CALL = 4;
+  EDGE_TYPE_RETURN = 5;
+}
+
+message Instruction {
+  string address = 1;
+  string opcode = 2;
+  string operands = 3;
+  string raw_bytes = 4;
+}
+
+// Call graph with nodes and edges
+message CallGraph {
+  repeated CallGraphNode nodes = 1;
+  repeated CallGraphEdge edges = 2;
+}
+
+// Function node in the call graph
+message CallGraphNode {
+  string id = 1;
+  string name = 2;
+  string address = 3;
+  bool is_user_defined = 4;
+  int32 size = 5;
+}
+
+// Function call edge in the call graph
+message CallGraphEdge {
+  string from = 1;
+  string to = 2;
+  string from_name = 3;
+  string to_name = 4;
+}
+
+message ChromeExtensionValidation {
+  string extension_id = 1;
+  bool is_valid = 2;
+  bool is_active = 3;
+  bool validation_attempted = 4;
+  string name = 5;
+  string version = 6;
+  string description = 7;
+  string error_msg = 8;
+  repeated string found_in_paths = 9;
+  repeated string found_in_apis = 10;
+  repeated string raw_matches = 11;
+}
+
+// StringModel holds string features that are used in the model.
+message StringModel {
+  // Number of strings.
+  int32 num_strings = 1;
+
+  // Maximum length of strings.
+  int32 max_length = 2;
+
+  // Number of strings longer than the average length.
+  int32 num_longer_than_avg = 3;
+
+  // Average length of strings.
+  double avg_length = 4;
+
+  // Entropy statistics for strings.
+  EntStat ent_stats = 5;
+
+  // Number of file paths found in the strings.
+  int32 num_paths = 6;
+
+  // Number of unique plist paths.
+  int32 num_unique_plist_paths = 7;
+
+  // Number of URLs found in the string.
+  int32 num_url = 8;
+
+  // Number of URLs with formatted strings.
+  int32 num_url_with_f_string = 9;
+
+  // Number of paths with formatted strings.
+  int32 num_path_with_f_string = 10;
+
+  // Number of unique domains.
+  int32 num_unique_domains = 11;
+
+  // Persistence features.
+  Persistence persistence = 12;
+
+  // Privilege escalation features.
+  PrivEsc priv_esc = 13;
+
+  // Encodings features.
+  Encodings encodings = 14;
+
+  // Number of unique shell paths found in the strings.
+  int32 num_unique_shells = 15;
+
+  // Number of I/O device listener keywords found in the strings.
+  int32 num_io_device_listeners = 18;
+
+  // Number of potential hardware reconnaissance features.
+  int32 num_potential_hw_recon = 19;
+
+  // Information Stealer Detection Metrics
+  // Number of browser data paths found (cookies, credentials, history, etc.)
+  int32 num_browser_paths = 20;
+
+  // Number of keychain access patterns found
+  int32 num_keychain_access = 22;
+
+  // Number of Telegram API endpoints found
+  int32 num_telegram_api = 23;
+
+  // Number of fake authentication prompts found
+  int32 num_fake_auth_prompts = 24;
+
+  // Number of Discord webhook endpoints found
+  int32 num_discord_webhooks = 25;
+
+  // macOS Security Bypass Detection Metrics
+  // Number of Gatekeeper bypass attempts found
+  int32 num_gatekeeper_bypass = 26;
+
+  // Number of quarantine removal attempts found
+  int32 num_quarantine_removal = 27;
+}
+
+// Entropy statistics for the strings.
+message EntStat {
+  // Entropy value.
+  double max_entropy = 1;
+  double mode_entropy = 2;
+  double mean_entropy = 3;
+}
+
+// Persistence hold the features that identify persistence in a binary.
+message Persistence {
+  int32 num_launch_agent_path = 1;
+  int32 num_launch_daemon_path = 2;
+  int32 num_startup_items = 3;
+  int32 num_scripting_addition = 4;
+  int32 num_login_window = 5;
+  int32 num_login_items = 6;
+  int32 num_shell_startup_files = 7;
+  int32 num_crontab = 8;
+}
+
+// Privilege escalation features.
+message PrivEsc {
+  // Number of keywords related to SQL DB e.g., insertions SQL commands.
+  int32 num_sql_lite = 1;
+
+  // Number of keywords related to Apple's TCC (Transparency, Consent, and
+  // Control) DB.
+  int32 num_tcc = 2;
+}
+
+// Encodings hold the features that identify the presence of encodings and certs
+// in a binary.
+message Encodings {
+  // Number of potential Base64 encoded string.
+  int32 num_base64 = 1;
+
+  // Number of certificate-related keywords. E.g., `BEGIN PUBLIC KEY`
+  // references.
+  int32 num_certs = 2;
+}
