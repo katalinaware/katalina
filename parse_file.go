@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/blacktop/go-macho"
+	gm "github.com/blacktop/go-macho"
 	"github.com/blacktop/go-macho/types"
 	"github.com/schollz/progressbar/v3"
 	"go.mozilla.org/pkcs7"
@@ -240,10 +241,19 @@ func init() {
 }
 
 func main() {
-	// skipParsed = false
-	// debug = true
-	// allSymbols = true
-	// retAllStrings = true
+	// Manual debug mode - hardcoded values
+	// debugFile := "geacon_cobalt_strike/3c220b95852f3bc577d91b1acf7d11cf43d1c87df717470845024a26a705078d"
+	// inFile := &debugFile
+
+	// debugDir := "lazarus"
+	// inDir := &debugDir
+
+	// outDir = "lazarus"
+
+	skipParsed = false
+	debug = true
+	allSymbols = true
+	retAllStrings = true
 
 	// Command line arguments.
 	inFile := flag.String("file", "", "the full path to the file to be parsed. Note, if this is filled, the input_dir will be ignored.")
@@ -561,6 +571,13 @@ func fileParse(dir, path string) error {
 			ErrorLogger.Printf("could not extract code directory: %v", err)
 		}
 
+		buildInformation := BuildInformation(r)
+		// Only macOS binaries are supported for full feature extraction.
+		// Skip others with a warning.
+		if buildInformation.Platform != types.Platform_macOS {
+			ErrorLogger.Printf("unsupported platform: %v", buildInformation.Platform.String())
+			return fmt.Errorf("unsupported platform: %v", buildInformation.Platform.String())
+		}
 		mp.ModelFeat.Entitlements = ents
 		mp.ModelFeat.CodeDirectory = getCodeDirectory(r)
 		mp.ModelFeat.CertFeatures, mp.NonModelFeat.Certificates = getCodeSigning(r)
@@ -1280,6 +1297,20 @@ func populateCDHashInfo(mR *MachoReader, cdRes *opb.CodeDirectory) {
 			return
 		}
 	}
+}
+
+// BuildInformation return the build specific information about a macho
+func BuildInformation(mR *MachoReader) types.BuildVersionCmd {
+	if mR == nil || mR.MachoReader == nil {
+		return types.BuildVersionCmd{}
+	}
+
+	for _, l := range mR.MachoReader.Loads {
+		if bv, ok := l.(*gm.BuildVersion); ok {
+			return bv.BuildVersionCmd
+		}
+	}
+	return types.BuildVersionCmd{}
 }
 
 // getCodeSignature extracts the code signing features from the macho file.
