@@ -43,32 +43,44 @@ type NotarizationTimestamp struct {
 }
 
 type TicketHeader struct {
-	Magic        string
-	MagicHex     string
-	Version      uint32
-	SignerLength uint32
+	Magic         string
+	MagicHex      string
+	Version       uint32
+	SignerLength  uint32
+	TypeIndicator uint32
+}
+
+type G8tkHeader struct {
+	Offset           int
+	CDHashType       uint16
+	CDHashLength     uint16
+	CDHashCount      uint32
+	ContentFlags     uint32
+	ContentTimestamp uint64
 }
 
 type TicketInfo struct {
 	SizeBytes    int
 	Header       TicketHeader
+	G8tkHeader   *G8tkHeader
 	Certificates []*opb.Certificate
-	CDHash       string
+	CDHashes     []string
 }
 
 // parseS8chHeader parses the Apple notarization ticket header structure (s8ch format).
-// The s8ch header is a 12-byte structure containing the magic bytes, version, and signer length.
+// The s8ch header is a 16-byte structure containing the magic bytes, version, signer length, and type indicator.
 //
 // Header format:
 //   - Bytes 0-3: Magic bytes "s8ch" (0x73 0x38 0x63 0x68)
 //   - Bytes 4-7: Version (uint32, little-endian)
-//   - Bytes 8-11: Signer data length (uint32, little-endian)
+//   - Bytes 8-11: Certificate chain length (uint32, little-endian)
+//   - Bytes 12-15: Type indicator - encodes data size, NOT ticket state (uint32, little-endian)
 //
 // References:
 //   - Apple Code Signing Guide: https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution
 //   - DER encoding: https://en.wikipedia.org/wiki/X.690#DER_encoding
 func parseS8chHeader(data []byte) (TicketHeader, error) {
-	if len(data) < 12 {
+	if len(data) < 16 {
 		return TicketHeader{}, fmt.Errorf("data too short for header")
 	}
 
@@ -76,44 +88,78 @@ func parseS8chHeader(data []byte) (TicketHeader, error) {
 	magicHex := fmt.Sprintf("%x", data[0:4])
 	version := binary.LittleEndian.Uint32(data[4:8])
 	signerLength := binary.LittleEndian.Uint32(data[8:12])
+	typeIndicator := binary.LittleEndian.Uint32(data[12:16])
 
 	return TicketHeader{
-		Magic:        magic,
-		MagicHex:     magicHex,
-		Version:      version,
-		SignerLength: signerLength,
+		Magic:         magic,
+		MagicHex:      magicHex,
+		Version:       version,
+		SignerLength:  signerLength,
+		TypeIndicator: typeIndicator,
 	}, nil
 }
 
-// findCDHash extracts the Code Directory Hash (CDHash) from Apple notarization ticket data.
-// The CDHash is a cryptographic hash that uniquely identifies the signed code.
-// It searches for a specific byte pattern in the last 200 bytes of the ticket data.
+// parseG8tkHeader parses the g8tk (Gatekeeper) header from Apple ticket data.
 //
-// The CDHash is 20 bytes and follows the pattern: 0x00 0x00 0x00 0x00 0x02
-//
-// References:
-//   - Code Directory format: https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_codesigning/lib/CSCommon.h
-//   - CDHash documentation: https://developer.apple.com/documentation/bundleresources/information_property_list/csresourcesfilepath
-//
-// Returns:
-//   - Hex-encoded CDHash string if found
-//   - Empty string if not found
-func findCDHash(data []byte) string {
-	searchStart := len(data) - 200
-	if searchStart < 0 {
-		searchStart = 0
-	}
-	tailData := data[searchStart:]
-
-	pattern := []byte{0x00, 0x00, 0x00, 0x00, 0x02}
-	pos := bytes.Index(tailData, pattern)
-
-	if pos != -1 && pos+25 <= len(tailData) {
-		cdhash := tailData[pos+5 : pos+25]
-		return fmt.Sprintf("%x", cdhash)
+// g8tk header format (24 bytes):
+//   - Bytes 0-3: Magic bytes "g8tk" (0x67 0x38 0x74 0x6B)
+//   - Bytes 4-5: CDHash type (uint16, little-endian) - always 0x0002 (SHA-256)
+//   - Bytes 6-7: CDHash length (uint16, little-endian) - always 0x0014 (20 bytes)
+//   - Bytes 8-11: CDHash count (uint32, little-endian) - number of hashes in array
+//   - Bytes 12-15: Content flags (uint32, little-endian) - Implies: 0=NOTARIZED, 1=REVOKED
+//   - Bytes 16-23: Content timestamp (uint64, little-endian) - Unix timestamp in seconds
+func parseG8tkHeader(data []byte) (*G8tkHeader, error) {
+	// Find g8tk magic
+	g8tkOffset := bytes.Index(data, []byte("g8tk"))
+	if g8tkOffset == -1 {
+		return nil, fmt.Errorf("g8tk header not found")
 	}
 
-	return ""
+	if g8tkOffset+24 > len(data) {
+		return nil, fmt.Errorf("g8tk header incomplete")
+	}
+
+	cdhashType := binary.LittleEndian.Uint16(data[g8tkOffset+4 : g8tkOffset+6])
+	cdhashLength := binary.LittleEndian.Uint16(data[g8tkOffset+6 : g8tkOffset+8])
+	cdhashCount := binary.LittleEndian.Uint32(data[g8tkOffset+8 : g8tkOffset+12])
+	contentFlags := binary.LittleEndian.Uint32(data[g8tkOffset+12 : g8tkOffset+16])
+	contentTimestamp := binary.LittleEndian.Uint64(data[g8tkOffset+16 : g8tkOffset+24])
+
+	return &G8tkHeader{
+		Offset:           g8tkOffset,
+		CDHashType:       cdhashType,
+		CDHashLength:     cdhashLength,
+		CDHashCount:      cdhashCount,
+		ContentFlags:     contentFlags,
+		ContentTimestamp: contentTimestamp,
+	}, nil
+}
+
+// extractCDHashes extracts all CDHash values from the g8tk CDHash array.
+// Each entry is 21 bytes: 1 byte hash type + 20 bytes hash value.
+func extractCDHashes(data []byte, g8tk *G8tkHeader) []string {
+	if g8tk == nil {
+		return nil
+	}
+
+	var cdhashes []string
+	hashesStart := g8tk.Offset + 24
+	hashEntrySize := 1 + int(g8tk.CDHashLength) // 1 byte type + hash length
+
+	for i := 0; i < int(g8tk.CDHashCount); i++ {
+		entryOffset := hashesStart + (i * hashEntrySize)
+
+		// Check bounds
+		if entryOffset+hashEntrySize > len(data) {
+			break
+		}
+
+		// Skip type byte, read hash value
+		hashValue := data[entryOffset+1 : entryOffset+1+int(g8tk.CDHashLength)]
+		cdhashes = append(cdhashes, fmt.Sprintf("%x", hashValue))
+	}
+
+	return cdhashes
 }
 
 // parseCertificateChain extracts X.509 certificates from Apple notarization ticket data.
@@ -268,30 +314,32 @@ func parseX509Certificate(certData []byte) (*opb.Certificate, error) {
 	return pbCert, nil
 }
 
-// parseNotarizationTicket parses an Apple notarization ticket and extracts certificate chain and CDHash.
-// The ticket is a base64-encoded binary structure containing a header, certificate chain, and signature data.
+// parseNotarizationTicket parses an Apple notarization/revocation ticket and extracts all fields.
+// The ticket is a base64-encoded binary structure containing headers, certificate chain, and CDHash array.
 //
 // Ticket structure:
-//   - Bytes 0-11: s8ch header (magic, version, signer length)
-//   - Bytes 12+: DER-encoded certificate chain
-//   - Tail bytes: CDHash and signature data
+//   - Bytes 0-15: s8ch header (magic, version, cert length, type indicator)
+//   - Bytes 16+: DER-encoded certificate chain
+//   - After certs: g8tk header (24 bytes) - THE KEY DIFFERENTIATOR
+//   - After g8tk: CDHash array (variable size)
+//   - End: ECDSA signature
 //
 // The function performs the following:
 //  1. Decodes base64 ticket data
-//  2. Parses s8ch header to get certificate chain length
+//  2. Parses s8ch header (16 bytes) to get certificate chain length
 //  3. Extracts and parses X.509 certificate chain
-//  4. Assigns certificate roles (leaf, intermediate, root) based on position
-//  5. Extracts CDHash from ticket tail
+//  4. Parses g8tk header to get content_flags (0=notarized, 1=revoked)
+//  5. Extracts all CDHashes from g8tk array
 //
 // References:
 //   - Apple Notarization: https://developer.apple.com/documentation/security/notarizing_macos_software_before_distribution
 //   - Code Signing: https://developer.apple.com/library/archive/technotes/tn2206/_index.html
 //
 // Parameters:
-//   - ticketBase64: Base64-encoded notarization ticket string
+//   - ticketBase64: Base64-encoded notarization/revocation ticket string
 //
 // Returns:
-//   - TicketInfo containing parsed header, certificates, and CDHash
+//   - TicketInfo containing parsed headers, certificates, and CDHashes
 //   - Error if parsing fails
 func parseNotarizationTicket(ticketBase64 string) (*TicketInfo, error) {
 	ticketData, err := base64.StdEncoding.DecodeString(ticketBase64)
@@ -299,16 +347,16 @@ func parseNotarizationTicket(ticketBase64 string) (*TicketInfo, error) {
 		return nil, fmt.Errorf("failed to decode base64 ticket: %v", err)
 	}
 
-	if len(ticketData) < 12 {
+	if len(ticketData) < 16 {
 		return nil, fmt.Errorf("ticket data too short")
 	}
 
-	header, err := parseS8chHeader(ticketData[0:12])
+	header, err := parseS8chHeader(ticketData[0:16])
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse header: %v", err)
 	}
 
-	certOffset := 12
+	certOffset := 16
 	certLength := int(header.SignerLength)
 
 	if certOffset+certLength > len(ticketData) {
@@ -332,13 +380,28 @@ func parseNotarizationTicket(ticketBase64 string) (*TicketInfo, error) {
 		}
 	}
 
-	cdhash := findCDHash(ticketData)
+	// Parse g8tk header (may fail for malformed tickets)
+	g8tk, err := parseG8tkHeader(ticketData)
+	if err != nil {
+		// Return partial info if g8tk parsing fails
+		return &TicketInfo{
+			SizeBytes:    len(ticketData),
+			Header:       header,
+			G8tkHeader:   nil,
+			Certificates: certificates,
+			CDHashes:     nil,
+		}, nil
+	}
+
+	// Extract all CDHashes from g8tk array
+	cdhashes := extractCDHashes(ticketData, g8tk)
 
 	return &TicketInfo{
 		SizeBytes:    len(ticketData),
 		Header:       header,
+		G8tkHeader:   g8tk,
 		Certificates: certificates,
-		CDHash:       cdhash,
+		CDHashes:     cdhashes,
 	}, nil
 }
 
@@ -449,11 +512,17 @@ func populateNotarizationInfo(notarization *opb.NotarizationInfo, record *Notari
 		return
 	}
 
-	notarization.IsNotarized = true
+	// We received a ticket from Apple's CloudKit service
+	notarization.HasTicket = true
 	notarization.Deleted = record.Deleted
 
 	// Extract and parse signed ticket
 	extractSignedTicket(notarization, record.Fields)
+
+	// Set IsNotarized based on ticket state (after extractSignedTicket sets TicketState)
+	// Only mark as notarized if ticket_state is NOTARIZED (content_flags=0)
+	// A revoked ticket (content_flags=1) should have IsNotarized=false
+	notarization.IsNotarized = (notarization.TicketState == opb.TicketState_TICKET_STATE_NOTARIZED)
 
 	// Extract timestamp information
 	if record.Created != nil {
@@ -463,7 +532,23 @@ func populateNotarizationInfo(notarization *opb.NotarizationInfo, record *Notari
 	}
 }
 
-// extractSignedTicket extracts the signed ticket from record fields and parses certificates.
+// classifyTicketState determines the ticket state based on g8tk content_flags.
+//
+// content_flags values:
+//   - 0: NOTARIZED - Binary is approved by Apple, macOS will ALLOW execution
+//   - 1: REVOKED - Binary is blocked by Apple, macOS will BLOCK execution
+func classifyTicketState(contentFlags uint32) opb.TicketState {
+	switch contentFlags {
+	case 0:
+		return opb.TicketState_TICKET_STATE_NOTARIZED
+	case 1:
+		return opb.TicketState_TICKET_STATE_REVOKED
+	default:
+		return opb.TicketState_TICKET_STATE_UNSPECIFIED
+	}
+}
+
+// extractSignedTicket extracts the signed ticket from record fields and parses all ticket data.
 func extractSignedTicket(notarization *opb.NotarizationInfo, fields map[string]interface{}) {
 	signedTicketField, exists := fields["signedTicket"]
 	if !exists {
@@ -487,16 +572,36 @@ func extractSignedTicket(notarization *opb.NotarizationInfo, fields map[string]i
 
 	notarization.SignedTicket = ticketStr
 
-	// Parse the ticket to extract certificates
+	// Parse the ticket to extract all fields
 	ticketInfo, err := parseNotarizationTicket(ticketStr)
 	if err != nil {
 		return
 	}
 
+	// Populate certificate chain
 	notarization.Certificates = ticketInfo.Certificates
-	if ticketInfo.CDHash != "" {
-		notarization.ExtractedCdhash = ticketInfo.CDHash
+
+	// Populate legacy field (first CDHash for backwards compatibility)
+	if len(ticketInfo.CDHashes) > 0 {
+		notarization.ExtractedCdhash = ticketInfo.CDHashes[0]
 	}
+
+	// Populate new fields from reverse engineering
+	if ticketInfo.G8tkHeader != nil {
+		notarization.TicketState = classifyTicketState(ticketInfo.G8tkHeader.ContentFlags)
+		notarization.ContentFlags = ticketInfo.G8tkHeader.ContentFlags
+		notarization.G8TkTimestamp = ticketInfo.G8tkHeader.ContentTimestamp
+		// Convert g8tk timestamp (Unix seconds) to UTC string
+		if ticketInfo.G8tkHeader.ContentTimestamp > 0 {
+			g8tkTime := time.Unix(int64(ticketInfo.G8tkHeader.ContentTimestamp), 0)
+			notarization.G8TkTimestampUtc = g8tkTime.UTC().Format(time.RFC3339)
+		}
+		notarization.CdhashCount = ticketInfo.G8tkHeader.CDHashCount
+	}
+
+	notarization.Cdhashes = ticketInfo.CDHashes
+	notarization.TypeIndicator = ticketInfo.Header.TypeIndicator
+	notarization.TicketSizeBytes = uint32(ticketInfo.SizeBytes)
 }
 
 // checkNotarizationForCDHash validates CDHash input and checks notarization status.

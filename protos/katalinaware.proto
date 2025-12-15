@@ -216,9 +216,19 @@ message CodeDirectory {
   NotarizationInfo notarization = 11;
 }
 
-// NotarizationInfo contains information about Apple notarization status
+// Ticket state enum based on g8tk content_flags field
+enum TicketState {
+  TICKET_STATE_UNSPECIFIED = 0;
+  TICKET_STATE_NOTARIZED = 1;  // content_flags=0
+  TICKET_STATE_REVOKED = 2;    // content_flags=1
+}
+
+// NotarizationInfo contains information about Apple notarization/revocation status
 message NotarizationInfo {
-  // Whether the binary is notarized by Apple
+  // Whether the binary is currently notarized and not revoked by Apple.
+  // This is true only when ticket_state == TICKET_STATE_NOTARIZED (content_flags=0).
+  // A revoked ticket (content_flags=1) will have is_notarized=false.
+  // Note: Having a ticket (ticket_state != UNSPECIFIED) does not mean is_notarized=true.
   bool is_notarized = 1;
   // Timestamp from Apple's response (milliseconds since epoch)
   int64 timestamp = 2;
@@ -236,6 +246,27 @@ message NotarizationInfo {
   repeated Certificate certificates = 8;
   // CDHash extracted from the signed ticket
   string extracted_cdhash = 9;
+  // Ticket state based on g8tk content_flags (0=notarized, 1=revoked)
+  TicketState ticket_state = 10;
+  // g8tk content_flags raw value from ticket
+  uint32 content_flags = 11;
+  // g8tk timestamp (Unix seconds) when ticket was issued
+  uint64 g8tk_timestamp = 12;
+  // Parsed g8tk timestamp as UTC string
+  string g8tk_timestamp_utc = 18;
+  // Number of CDHashes in the ticket array
+  uint32 cdhash_count = 13;
+  // All CDHashes from the g8tk array
+  repeated string cdhashes = 14;
+  // Main header type_indicator (encodes data size, not state)
+  uint32 type_indicator = 15;
+  // Total ticket size in bytes
+  uint32 ticket_size_bytes = 16;
+  // Whether a ticket was successfully retrieved from Apple's CloudKit ticket delivery service
+  // (com.apple.gk.ticket-delivery/production). True if we received a ticket response from Apple,
+  // regardless of whether it's a notarization ticket (content_flags=0) or revocation ticket (content_flags=1).
+  // False if no ticket was found (NOT_FOUND) or an error occurred.
+  bool has_ticket = 17;
 }
 
 // DySymTabFeatures holds features that pertain to the Dynamic Symbol command in
